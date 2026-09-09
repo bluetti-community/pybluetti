@@ -1,3 +1,7 @@
+# 0.2.2
+
+- `ApplicationRuntimeException`'s `msgCode` is now included in `str(exc)` itself (e.g. `[500] server error`), not just the separate `.msgCode` attribute - every existing caller that logs or displays this exception (notably `bluetti-home-assistant`'s own websocket-error Repair issue, which shows `str(err)` directly to the end user) now surfaces the code with no changes needed on its end. Prompted by a real user hitting an unrecognized code with no way to report which one it was short of digging through a raw STOMP frame dump (bluetti-community/bluetti-home-assistant#35). `.message` is unchanged - still the plain, code-free text.
+
 # 0.2.1rc1 (pre-release)
 
 - Fixed `_run()` leaving the abandoned connection open on every path except a token-expiry (msgCode 805): an `ApplicationRuntimeException`, a plain ERROR/CLOSE message, or an unexpected crash all left `close()` uncalled on the old connection. 0.2.0's heartbeat-task cancellation in `connect()` was only a partial fix - the still-open connection let a concurrently-running heartbeat send slip past its own is-it-closed check and fail against the transport before aiohttp itself noticed the remote side had already closed, reported as "Failed to send heartbeat: Cannot write to closing transport" repeating on every reconnect cycle in production (real-world confirmation: bluetti-official/bluetti-home-assistant#145). `_run()` now closes the connection itself as soon as it decides to abandon it, closing that race instead of just narrowing it.
