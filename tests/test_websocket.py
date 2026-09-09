@@ -341,7 +341,7 @@ async def test_run_catches_application_runtime_exception_logs_full_and_calls_on_
     assert "BLUETTI WebSocket task crashed (repeat): %s" not in debug_messages
     on_error.assert_called_once()
     assert on_error.call_args[0][0].msgCode == 500
-    assert client._last_error_message == "server error"
+    assert client._last_error_message == "[500] server error"
     # The real bug this guards against: _run() used to leave the abandoned
     # connection open on this exact path (only msgCode 805 closed it), so a
     # concurrently-running heartbeat task could still be mid-send against it
@@ -357,7 +357,7 @@ async def test_run_downgrades_repeated_identical_application_runtime_exception()
     client = StompClient(session, GATEWAY_WS_URL, "token")
     client._ws = ws
     client.running = True
-    client._last_error_message = "server error"  # already logged once, on a previous retry
+    client._last_error_message = "[500] server error"  # already logged once, on a previous retry
     client.reconnect = AsyncMock()
 
     with patch("pybluetti.websocket.__LOGGER__") as logger:
@@ -374,14 +374,14 @@ async def test_run_relogs_in_full_once_the_error_message_changes():
     client = StompClient(session, GATEWAY_WS_URL, "token")
     client._ws = ws
     client.running = True
-    client._last_error_message = "server error"
+    client._last_error_message = "[500] server error"
     client.reconnect = AsyncMock()
 
     with patch("pybluetti.websocket.__LOGGER__") as logger:
         await client._run()
 
     logger.exception.assert_called_once_with("BLUETTI WebSocket task crashed")
-    assert client._last_error_message == "a different error"
+    assert client._last_error_message == "[500] a different error"
 
 
 async def test_run_application_runtime_exception_without_on_error_does_not_raise():
