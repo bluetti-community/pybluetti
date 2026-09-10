@@ -19,6 +19,22 @@ from .exceptions import ApplicationRuntimeException
 
 __LOGGER__ = logging.getLogger(__name__)
 
+# ERROR frame msgCodes that mean this connection can never succeed as-is -
+# retrying it is pointless, not just unlikely. 600 ("Upgrade required, and
+# then reconfigure the BLUETTI integration") is directly confirmed against
+# a real device: retried every ~30s for over a day with the identical
+# rejection every time (bluetti-community/bluetti-home-assistant#35). 400
+# and 403 aren't yet directly observed here, but BLUETTI's own official
+# client (bluetti-official/bluetti-home-assistant's api/websocket.py)
+# groups all three with 805 (a genuinely expired token) as needing the same
+# response - stop and don't retry. They're kept out of on_auth_expired's
+# 805 path below deliberately: unlike 805, none of these three necessarily
+# mean the access token itself is the problem (600's own real cause is
+# still unconfirmed - see the issue above), so claiming that would be
+# actively misleading. They still reach a caller via on_error, same as any
+# other non-805 code - this only stops the pointless retry loop.
+_TERMINAL_ERROR_CODES = frozenset({400, 403, 600})
+
 
 class StompClient:
     """A STOMP client connected to the BLUETTI cloud's push-update websocket."""
@@ -43,11 +59,15 @@ class StompClient:
         - on_auth_expired: called when the cloud reports the access token as
           expired (msgCode 805), so the caller can react.
         - on_error: called with any other ERROR frame the cloud sends back
-          (a msgCode other than 805). The client still retries with backoff
-          regardless - some of these are transient - but nothing else
-          surfaces a persistent one distinctly from a run-of-the-mill
-          connection drop, so a caller that wants to react (log once, show
-          the user something actionable) has no other hook for it.
+          (a msgCode other than 805). The client keeps retrying with
+          backoff for most of these - some are transient - except a known
+          set (see _TERMINAL_ERROR_CODES) it stops retrying for, since
+          those are confirmed (or, per BLUETTI's own official client,
+          strongly implied) to never succeed on retry either. Either way,
+          nothing else surfaces a persistent one distinctly from a
+          run-of-the-mill connection drop, so a caller that wants to react
+          (log once, show the user something actionable) has no other hook
+          for it.
         """
         self._session = session
         self.__url = url + "/websocket"
@@ -259,6 +279,18 @@ class StompClient:
                 self.on_auth_expired()
             __LOGGER__.info("token have expired stop ws connect")
         else:
+            if error["msgCode"] in _TERMINAL_ERROR_CODES:
+                # Same "stop, don't retry" outcome as 805 above, reached
+                # the same way _run() already stops retrying on any other
+                # exit from its receive loop: setting running False here,
+                # before raising, means the "if self.running: reconnect()"
+                # check it does afterwards is already False by the time it
+                # runs. Deliberately not the 805 branch above - on_error
+                # (below, via the raise) still fires with the real message,
+                # instead of on_auth_expired's specifically-token-expired
+                # framing, which wouldn't be accurate here (see
+                # _TERMINAL_ERROR_CODES's own comment).
+                self.running = False
             raise ApplicationRuntimeException(msgCode=error["msgCode"], errMessage=error["message"])
 
     async def _handle_connected_frame(self, frame: stomper.Frame) -> None:
