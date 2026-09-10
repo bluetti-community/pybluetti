@@ -351,6 +351,24 @@ async def test_run_catches_application_runtime_exception_logs_full_and_calls_on_
     client.reconnect.assert_awaited_once()
 
 
+async def test_run_does_not_reconnect_after_a_terminal_error_code():
+    ws = _FakeWebSocket([_error_message(600, "Upgrade required")])
+    on_error = MagicMock()
+    session = _FakeSession(ws)
+    client = StompClient(session, GATEWAY_WS_URL, "token", on_error=on_error)
+    client._ws = ws
+    client.running = True
+    client.reconnect = AsyncMock()
+
+    await client._run()
+
+    on_error.assert_called_once()
+    assert on_error.call_args[0][0].msgCode == 600
+    assert ws.close_called is True
+    client.reconnect.assert_not_awaited()
+    assert client.running is False
+
+
 async def test_run_downgrades_repeated_identical_application_runtime_exception():
     ws = _FakeWebSocket([_error_message(500, "server error")])
     session = _FakeSession(ws)
@@ -440,6 +458,41 @@ async def test_handle_frame_error_other_code_raises():
         await client._handle_frame(raw)
 
     assert exc_info.value.msgCode == 500
+
+
+async def test_handle_frame_error_other_code_does_not_stop_retrying():
+    # A non-terminal, non-805 code (500) must not be mistaken for one of
+    # the codes known to never succeed on retry - client.running is left
+    # exactly as it was (True: a real, live connection still exists).
+    client, _session, _on_auth_expired = _client()
+    client.running = True
+    payload = json.dumps({"msgCode": 500, "message": "server error"}).replace(":", "\\c")
+    raw = f"ERROR\nmessage:{payload}\n\n\x00"
+
+    with pytest.raises(ApplicationRuntimeException):
+        await client._handle_frame(raw)
+
+    assert client.running is True
+
+
+@pytest.mark.parametrize("msg_code", [400, 403, 600])
+async def test_handle_frame_error_terminal_code_stops_retrying_but_still_raises(msg_code):
+    # 400/403/600: confirmed (600) or strongly implied (400, 403 - see
+    # _TERMINAL_ERROR_CODES's own comment) to never succeed on retry.
+    # Unlike 805, these still raise (on_error fires with the real message)
+    # rather than calling on_auth_expired - none of the three necessarily
+    # mean the token itself is the problem.
+    client, _session, on_auth_expired = _client()
+    client.running = True
+    payload = json.dumps({"msgCode": msg_code, "message": "terminal"}).replace(":", "\\c")
+    raw = f"ERROR\nmessage:{payload}\n\n\x00"
+
+    with pytest.raises(ApplicationRuntimeException) as exc_info:
+        await client._handle_frame(raw)
+
+    assert exc_info.value.msgCode == msg_code
+    assert client.running is False
+    on_auth_expired.assert_not_called()
 
 
 async def test_handle_frame_connected_without_websocket_logs_and_returns():

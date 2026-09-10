@@ -1,3 +1,7 @@
+# 0.2.3
+
+- `StompClient` now stops retrying (instead of reconnecting forever, every ~30s with backoff) once the cloud sends msgCode 400, 403, or 600 in an ERROR frame - these are confirmed (600, directly observed retried unsuccessfully for over a day against a real device) or strongly implied (400, 403, per BLUETTI's own official Home Assistant integration's client, which groups all three with a genuine token expiry - msgCode 805 - as needing the same "stop and don't retry" response) to never succeed on retry. Deliberately not folded into the existing `on_auth_expired` (805) path: none of these three necessarily mean the access token itself is the problem, so claiming that would be misleading - they still reach a caller via `on_error`, with the real message, same as any other non-805 code.
+
 # 0.2.2
 
 - `ApplicationRuntimeException`'s `msgCode` is now included in `str(exc)` itself (e.g. `[500] server error`), not just the separate `.msgCode` attribute - every existing caller that logs or displays this exception (notably `bluetti-home-assistant`'s own websocket-error Repair issue, which shows `str(err)` directly to the end user) now surfaces the code with no changes needed on its end. Prompted by a real user hitting an unrecognized code with no way to report which one it was short of digging through a raw STOMP frame dump (bluetti-community/bluetti-home-assistant#35). `.message` is unchanged - still the plain, code-free text.
