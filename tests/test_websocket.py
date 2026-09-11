@@ -84,6 +84,20 @@ def test_get_host_strips_port_and_path(url, expected):
     assert StompClient._StompClient__get_host(url) == expected
 
 
+# --- StompClient.__init__'s app_key/app_ver validation -----------------------
+
+def test_init_raises_if_only_app_key_given():
+    session = _FakeSession(None)
+    with pytest.raises(ValueError, match="app_key and app_ver must be given together"):
+        StompClient(session, GATEWAY_WS_URL, "token", app_key="key")
+
+
+def test_init_raises_if_only_app_ver_given():
+    session = _FakeSession(None)
+    with pytest.raises(ValueError, match="app_key and app_ver must be given together"):
+        StompClient(session, GATEWAY_WS_URL, "token", app_ver="1.3.0")
+
+
 # --- StompClient.connect ------------------------------------------------------
 
 async def test_connect_opens_socket_sends_connect_frame_and_starts_tasks():
@@ -98,6 +112,32 @@ async def test_connect_opens_socket_sends_connect_frame_and_starts_tasks():
     assert "Authorization: token" in ws.sent[0]
     assert client._receive_task is not None
     assert client._heartbeat_task is not None
+
+
+async def test_connect_omits_client_identification_headers_by_default():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+
+    await client.connect()
+
+    assert "x-app-key" not in ws.sent[0]
+    assert "x-app-ver" not in ws.sent[0]
+    assert "x-os" not in ws.sent[0]
+
+
+async def test_connect_sends_client_identification_headers_when_given():
+    ws = _FakeWebSocket()
+    session = _FakeSession(ws)
+    client = StompClient(
+        session, GATEWAY_WS_URL, "token", app_key="the-key", app_ver="1.3.0"
+    )
+    client._ws = ws
+
+    await client.connect()
+
+    assert "x-os:open" in ws.sent[0]
+    assert "x-app-key:the-key" in ws.sent[0]
+    assert "x-app-ver:1.3.0" in ws.sent[0]
 
 
 async def test_connect_cancels_a_stale_heartbeat_task_from_a_previous_connection():
