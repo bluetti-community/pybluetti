@@ -1,3 +1,7 @@
+# 0.2.4
+
+- `StompClient` accepts optional `app_key`/`app_ver` keyword arguments, sent as `x-app-key`/`x-app-ver` CONNECT headers (alongside a fixed `x-os:open`) - BLUETTI's cloud gateway does client identification/version gating on this connection (see 0.2.3's own `msgCode 600` fix), and BLUETTI's own official Home Assistant integration's client already sends exactly these three headers on every connection. Optional and independent of everything else here - a caller with nothing to identify itself with still gets exactly the previous behavior, not headers claiming an identity it doesn't have. Raises `ValueError` if only one of the two is given.
+
 # 0.2.3
 
 - `StompClient` now stops retrying (instead of reconnecting forever, every ~30s with backoff) once the cloud sends msgCode 400, 403, or 600 in an ERROR frame - these are confirmed (600, directly observed retried unsuccessfully for over a day against a real device) or strongly implied (400, 403, per BLUETTI's own official Home Assistant integration's client, which groups all three with a genuine token expiry - msgCode 805 - as needing the same "stop and don't retry" response) to never succeed on retry. Deliberately not folded into the existing `on_auth_expired` (805) path: none of these three necessarily mean the access token itself is the problem, so claiming that would be misleading - they still reach a caller via `on_error`, with the real message, same as any other non-805 code.

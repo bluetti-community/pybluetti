@@ -39,7 +39,7 @@ _TERMINAL_ERROR_CODES = frozenset({400, 403, 600})
 class StompClient:
     """A STOMP client connected to the BLUETTI cloud's push-update websocket."""
 
-    def __init__(  # noqa: PLR0913 -- three optional, independently-set callbacks, all keyword-only; bundling them into one object would just move the same information one level down without simplifying a caller that only wants one of them
+    def __init__(  # noqa: PLR0913 -- five optional, independently-set values, all keyword-only; bundling them into one object would just move the same information one level down without simplifying a caller that only wants some of them
         self,
         session: aiohttp.ClientSession,
         url: str,
@@ -48,6 +48,8 @@ class StompClient:
         handler: Callable[[str], None] | None = None,
         on_auth_expired: Callable[[], None] | None = None,
         on_error: Callable[[ApplicationRuntimeException], None] | None = None,
+        app_key: str | None = None,
+        app_ver: str | None = None,
     ) -> None:
         """
         Initialize the client.
@@ -68,13 +70,27 @@ class StompClient:
           run-of-the-mill connection drop, so a caller that wants to react
           (log once, show the user something actionable) has no other hook
           for it.
+        - app_key, app_ver: client-identification headers the CONNECT frame
+          sends as x-app-key/x-app-ver, alongside a fixed x-os:open (see
+          _client_identification_headers' own docstring for why this
+          exists at all). Optional and independent of everything else here
+          - a caller with nothing to identify itself with still gets a
+          connection attempt with exactly today's headers, not a forced
+          value it doesn't have. Raises ValueError if only one is given -
+          the cloud is only known to accept both together or neither.
         """
+        if (app_key is None) != (app_ver is None):
+            msg = "app_key and app_ver must be given together"
+            raise ValueError(msg)
+
         self._session = session
         self.__url = url + "/websocket"
         self.__headers = {
             "Host": self.__get_host(url),
             "Authorization": access_token,
         }
+        self._app_key = app_key
+        self._app_ver = app_ver
         self.__handler = handler
         self.on_auth_expired = on_auth_expired
         self.on_error = on_error
@@ -115,6 +131,30 @@ class StompClient:
             host = host.split(":")[0]
         return host
 
+    def _client_identification_headers(self) -> str:
+        """
+        Return the x-os/x-app-key/x-app-ver CONNECT header lines, or "".
+
+        The cloud's websocket gateway does client identification/version
+        gating - confirmed by a real, persistent rejection (msgCode 600,
+        "Upgrade required, and then reconfigure the BLUETTI integration")
+        that never once succeeded on retry against a real device (bluetti-
+        community/bluetti-home-assistant#35). BLUETTI's own official
+        client (bluetti-official/bluetti-home-assistant's api/websocket.py)
+        sends exactly these three headers on every CONNECT frame, which
+        this client never did.
+
+        x-os is always "open" - not something a caller configures, since
+        BLUETTI's own official client hardcodes the identical value
+        regardless of the platform the integration itself runs on.
+        x-app-key/x-app-ver are per-caller (see __init__'s own docstring):
+        a real client-identification value belongs to whichever
+        integration was actually issued one, not to this library itself.
+        """
+        if self._app_key is None or self._app_ver is None:
+            return ""
+        return f"x-os:open\nx-app-key:{self._app_key}\nx-app-ver:{self._app_ver}\n"
+
     async def connect(self) -> None:
         """Connect to the ws server and start the background receive/heartbeat tasks."""
         __LOGGER__.info("Start to connect the BLUETTI WebSocket Server.")
@@ -139,7 +179,8 @@ class StompClient:
                 "Host:" + self.__headers["Host"] + "\n"
                 "Authorization: " + self.__headers["Authorization"] + "\n"
                 "heart-beat:10000,10000\n"
-                "\n\x00\n"
+                + self._client_identification_headers()
+                + "\n\x00\n"
             )
             await self._ws.send_str(connect_frame)
         except Exception:

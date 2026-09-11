@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pybluetti"
-version = "0.2.3"
+version = "0.2.4"
 description = "Async Python client for the BLUETTI cloud API - device discovery, state, and control."
 readme = "README.md"
 license = "MIT"
