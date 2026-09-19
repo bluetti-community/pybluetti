@@ -10,7 +10,7 @@ import aiohttp
 from pydantic import TypeAdapter
 
 from .const import Method
-from .exceptions import ApplicationRuntimeException
+from .exceptions import HttpStatusException
 from .unify_response import UnifyResponse
 
 
@@ -107,7 +107,9 @@ class Bluetti:
             self.logger.debug("<====== Server response type is: %s", response.content_type)
 
             if not response.ok:
-                raise ApplicationRuntimeException(msgCode=response.status, data=await response.text())
+                raise HttpStatusException(
+                    response.status, response.reason or "", data=await response.text()
+                )
 
             if response.content_type.lower().startswith("application/json"):
                 data = await response.json()  # read response body to JSON

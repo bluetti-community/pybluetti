@@ -12,7 +12,7 @@ bluetti-home-assistant to depend on this package is a separate follow-up.
 
 from .client import Bluetti
 from .const import Method
-from .exceptions import ApplicationRuntimeException
+from .exceptions import ApplicationRuntimeException, HttpStatusException
 from .models import UserProduct
 from .product_client import ProductClient
 from .unify_response import UnifyResponse
@@ -23,6 +23,7 @@ __version__ = "0.1.1"
 __all__ = [
     "ApplicationRuntimeException",
     "Bluetti",
+    "HttpStatusException",
     "Method",
     "ProductClient",
     "StompClient",

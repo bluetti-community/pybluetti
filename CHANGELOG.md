@@ -1,3 +1,7 @@
+# 0.2.5
+
+- Added `HttpStatusException` (an `ApplicationRuntimeException`), raised by `_request()` when the gateway answers with a non-2xx HTTP status instead of the plain base class: `status` and `reason` carry the HTTP status and reason phrase (`str(exc)` is e.g. `[504] HTTP 504 Gateway Timeout` instead of `[504] An unknown error has occurred.`), `data` the response body, and `is_transient` says whether one immediate retry is worth a try (502/503/504). `msgCode` is still the HTTP status, so every existing caller keeps working; a caller can now tell a gateway 504 from an API `msgCode` that happens to be 504. Prompted by bluetti-community/bluetti-home-assistant#53, a lone 504 on one poll of thirty failing the whole poll.
+
 # 0.2.4
 
 - `StompClient` accepts optional `app_key`/`app_ver` keyword arguments, sent as `x-app-key`/`x-app-ver` CONNECT headers (alongside a fixed `x-os:open`) - BLUETTI's cloud gateway does client identification/version gating on this connection (see 0.2.3's own `msgCode 600` fix), and BLUETTI's own official Home Assistant integration's client already sends exactly these three headers on every connection. Optional and independent of everything else here - a caller with nothing to identify itself with still gets exactly the previous behavior, not headers claiming an identity it doesn't have. Raises `ValueError` if only one of the two is given.
