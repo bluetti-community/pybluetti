@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pybluetti.exceptions import ApplicationRuntimeException
+from pybluetti.exceptions import ApplicationRuntimeException, HttpStatusException
 from pybluetti.product_client import ProductClient
 
 GATEWAY_URL = "https://gw.bluettipower.com"
@@ -13,6 +13,7 @@ GATEWAY_URL = "https://gw.bluettipower.com"
 class _FakeResponse:
     def __init__(self, status=200, content_type="application/json", json_data=None, text_data=""):
         self.status = status
+        self.reason = {200: "OK", 401: "Unauthorized", 504: "Gateway Timeout"}.get(status)
         self.ok = 200 <= status < 400
         self.content_type = content_type
         self.url = "https://gw.bluettipower.com/fake"
@@ -130,6 +131,22 @@ async def test_request_raises_on_non_ok_status():
 
     assert exc_info.value.msgCode == 401
     assert exc_info.value.data == "unauthorized"
+
+
+async def test_request_raises_http_status_exception_with_status_and_reason():
+    # A gateway timeout is the HTTP layer, not the API: the exception says
+    # so, and says it is transient (bluetti-community/bluetti-home-assistant#53).
+    response = _FakeResponse(status=504, text_data="An unknown error has occurred.")
+    session = _FakeSession(response)
+    client, _on_auth_expired = _client(session)
+
+    with pytest.raises(HttpStatusException) as exc_info:
+        await client.get_user_products()
+
+    assert exc_info.value.status == 504
+    assert exc_info.value.reason == "Gateway Timeout"
+    assert exc_info.value.is_transient
+    assert str(exc_info.value) == "[504] HTTP 504 Gateway Timeout"
 
 
 async def test_request_returns_raw_text_for_non_json_response():
