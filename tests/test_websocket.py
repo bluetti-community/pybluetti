@@ -168,7 +168,11 @@ async def test_update_access_token_affects_the_next_connect():
     await client.disconnect()  # tidy up the background tasks started above
 
 
-async def test_connect_failure_triggers_reconnect():
+async def test_connect_failure_schedules_a_reconnect_and_returns():
+    # Regression test: connect() used to await the retry loop, so a caller
+    # connecting during its own start-up - Home Assistant inside
+    # async_setup_entry - hung there for as long as the cloud was unreachable
+    # (bluetti-community/bluetti-home-assistant#65). It must return.
     class _FailingSession:
         async def ws_connect(self, url, **kwargs):
             msg = "boom"
@@ -179,7 +183,80 @@ async def test_connect_failure_triggers_reconnect():
 
     await client.connect()
 
+    assert client._reconnect_task is not None
+    await client._reconnect_task
     client.reconnect.assert_awaited_once()
+
+
+async def test_connect_closes_a_socket_whose_connect_frame_failed():
+    # The leak behind the timeouts in #65: ws_connect can succeed and the
+    # CONNECT frame still fail, leaving that socket open with nothing left to
+    # close it - one per failed attempt, until the pool has no free slot.
+    ws = _FakeWebSocket()
+
+    async def _failing_send(_data):
+        msg = "boom"
+        raise aiohttp.ClientConnectionError(msg)
+
+    ws.send_str = _failing_send
+    client, _session, _on_auth_expired = _client(ws)
+    client.reconnect = AsyncMock()
+
+    await client.connect()
+
+    assert ws.close_called is True
+    assert client._ws is None
+
+
+async def test_connect_resets_the_backoff_so_it_is_per_outage():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.reconnect_delay = 30
+
+    await client.connect()
+
+    assert client.reconnect_delay == 1
+
+    await client.disconnect()  # tidy up the background tasks started above
+
+
+async def test_schedule_reconnect_does_nothing_when_stopped_or_already_running():
+    client, _session, _on_auth_expired = _client()
+    client.running = False
+    client._schedule_reconnect()
+    assert client._reconnect_task is None
+
+    client.running = True
+    running_task = MagicMock()
+    running_task.done.return_value = False
+    client._reconnect_task = running_task
+    client._schedule_reconnect()
+    assert client._reconnect_task is running_task
+
+
+async def test_close_socket_survives_a_socket_that_will_not_close():
+    ws = _FakeWebSocket()
+
+    async def _failing_close():
+        msg = "boom"
+        raise aiohttp.ClientConnectionError(msg)
+
+    ws.close = _failing_close
+    client, _session, _on_auth_expired = _client(ws)
+
+    await client._close_socket()  # must not raise
+
+    assert client._ws is None
+
+
+async def test_close_socket_leaves_an_already_closed_socket_alone():
+    ws = _FakeWebSocket()
+    ws.closed = True
+    client, _session, _on_auth_expired = _client(ws)
+
+    await client._close_socket()
+
+    assert ws.close_called is False
 
 
 # --- StompClient.disconnect ---------------------------------------------------
@@ -208,26 +285,67 @@ async def test_reconnect_when_running_backs_off_and_reconnects():
     client.running = True
     client.reconnect_delay = 1
     client.max_reconnect_delay = 30
-    client.connect = AsyncMock()
+    client._connect_once = AsyncMock(return_value=True)
 
     with patch("pybluetti.websocket.asyncio.sleep", AsyncMock()) as mock_sleep:
         await client.reconnect()
 
     mock_sleep.assert_awaited_once_with(1)
     assert client.reconnect_delay == 2
-    client.connect.assert_awaited_once()
+    client._connect_once.assert_awaited_once()
+
+
+async def test_reconnect_keeps_trying_until_a_connection_is_made():
+    # A loop, not a recursive call back into connect(): each retry used to
+    # nest inside the previous one's await (#65).
+    client, _session, _on_auth_expired = _client()
+    client.running = True
+    client.reconnect_delay = 1
+    client.max_reconnect_delay = 4
+    client._connect_once = AsyncMock(side_effect=[False, False, True])
+
+    with patch("pybluetti.websocket.asyncio.sleep", AsyncMock()) as mock_sleep:
+        await client.reconnect()
+
+    assert client._connect_once.await_count == 3
+    assert [c.args[0] for c in mock_sleep.await_args_list] == [1, 2, 4]
+
+
+async def test_reconnect_stops_when_the_client_is_disconnected_mid_wait():
+    client, _session, _on_auth_expired = _client()
+    client.running = True
+    client._connect_once = AsyncMock(return_value=False)
+
+    async def _stop(_delay):
+        client.running = False
+
+    with patch("pybluetti.websocket.asyncio.sleep", AsyncMock(side_effect=_stop)):
+        await client.reconnect()
+
+    client._connect_once.assert_not_awaited()
 
 
 async def test_reconnect_when_stopped_does_nothing():
     client, _session, _on_auth_expired = _client()
     client.running = False
-    client.connect = AsyncMock()
+    client._connect_once = AsyncMock()
 
     with patch("pybluetti.websocket.asyncio.sleep", AsyncMock()) as mock_sleep:
         await client.reconnect()
 
     mock_sleep.assert_not_awaited()
-    client.connect.assert_not_awaited()
+    client._connect_once.assert_not_awaited()
+
+
+async def test_disconnect_cancels_a_pending_reconnect():
+    client, _session, _on_auth_expired = _client()
+    pending = MagicMock()
+    client._reconnect_task = pending
+
+    with patch("pybluetti.websocket.asyncio.gather", AsyncMock()):
+        await client.disconnect()
+
+    pending.cancel.assert_called_once()
 
 
 # --- StompClient._heartbeat_loop ----------------------------------------------

@@ -99,6 +99,7 @@ class StompClient:
 
         self._receive_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
         self.heartbeat_interval = 10
         # The most recent ApplicationRuntimeException message _run() logged
         # at full severity, cleared once a CONNECTED frame proves the
@@ -156,10 +157,25 @@ class StompClient:
         return f"x-os:open\nx-app-key:{self._app_key}\nx-app-ver:{self._app_ver}\n"
 
     async def connect(self) -> None:
-        """Connect to the ws server and start the background receive/heartbeat tasks."""
+        """
+        Connect to the ws server and start the background receive/heartbeat tasks.
+
+        Returns once a single attempt has been made: a failure schedules the
+        retry in the background instead of awaiting it here. Callers connect
+        during their own start-up - Home Assistant awaits this inside
+        async_setup_entry - and a retry loop that only returns on success
+        leaves that start-up hanging for as long as the cloud is unreachable,
+        with the entry stuck "initialising", no reload offered, and nothing
+        but a restart to clear it (bluetti-community/bluetti-home-assistant#65).
+        """
         __LOGGER__.info("Start to connect the BLUETTI WebSocket Server.")
         self.running = True
+        if await self._connect_once():
+            return
+        self._schedule_reconnect()
 
+    async def _connect_once(self) -> bool:
+        """One connection attempt; True when the socket and its tasks are up."""
         # A reconnect (whether from a dropped connection or a rejected one)
         # leaves the previous heartbeat task still scheduled on the old,
         # now-stale websocket - only the msgCode-805 path cancels it before
@@ -169,6 +185,7 @@ class StompClient:
         # whatever actually triggered this reconnect.
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
+        await self._close_socket()
 
         try:
             self._ws = await self._session.ws_connect(self.__url, headers=self.__headers)
@@ -187,18 +204,50 @@ class StompClient:
             # Same resilience as a run-time disconnect: log and retry with
             # backoff rather than letting a connection failure go silent.
             __LOGGER__.exception("Failed to connect to the BLUETTI WebSocket Server")
-            await self.reconnect()
-            return
+            # ws_connect can succeed and the CONNECT frame still fail, which
+            # leaves that socket open with nothing left to close it. One per
+            # failed attempt fills the session's connection pool, until every
+            # new connection waits for a free slot and times out - which is
+            # what a failing reconnect loop eventually does to the rest of the
+            # integration (bluetti-community/bluetti-home-assistant#65).
+            await self._close_socket()
+            return False
 
         __LOGGER__.info("Connect the BLUETTI WebSocket Server successfully.")
 
+        # The backoff is per outage, not cumulative: without this, every later
+        # reconnect starts at whatever delay the last outage grew it to.
+        self.reconnect_delay = 1
         self._receive_task = asyncio.ensure_future(self._run())
         self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
+        return True
+
+    async def _close_socket(self) -> None:
+        """Close and forget the current socket, if there is one left open."""
+        ws, self._ws = self._ws, None
+        if ws is None or ws.closed:
+            return
+        try:
+            await ws.close()
+        except Exception:
+            __LOGGER__.debug("Error while closing a stale websocket", exc_info=True)
+
+    def _schedule_reconnect(self) -> None:
+        """Run the retry loop in the background, unless one is already running."""
+        if not self.running:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.ensure_future(self.reconnect())
 
     async def disconnect(self) -> None:
         """Stop reconnecting, cancel background tasks, and close the connection."""
         self.running = False
-        tasks = [t for t in (self._receive_task, self._heartbeat_task) if t is not None]
+        tasks = [
+            t
+            for t in (self._receive_task, self._heartbeat_task, self._reconnect_task)
+            if t is not None
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -207,14 +256,25 @@ class StompClient:
             await self._ws.close()
 
     async def reconnect(self) -> None:
-        """Reconnect with exponential backoff, if still running."""
-        __LOGGER__.info("Websocket reconnect")
-        if self.running:
+        """
+        Retry with exponential backoff until connected, or until stopped.
+
+        A loop rather than a call back into connect(): each retry used to nest
+        inside the previous one's await, so the first caller's await never
+        returned while the cloud stayed unreachable, and the stack grew by a
+        frame per attempt (bluetti-community/bluetti-home-assistant#65).
+        """
+        if not self.running:
+            __LOGGER__.info("Websocket have stop do not reconnect")
+            return
+        while self.running:
+            __LOGGER__.info("Websocket reconnect")
             await asyncio.sleep(self.reconnect_delay)
             self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
-            await self.connect()
-        else:
-            __LOGGER__.info("Websocket have stop do not reconnect")
+            if not self.running:
+                return
+            if await self._connect_once():
+                return
 
     async def _heartbeat_loop(self) -> None:
         r"""Send a STOMP heartbeat ("\n") on the configured interval."""
