@@ -13,6 +13,12 @@ from .const import Method
 from .exceptions import HttpStatusException
 from .unify_response import UnifyResponse
 
+# Set on every request, since without it the session's own limit applies, and
+# aiohttp's default for that is five minutes: a request the gateway accepts
+# and never answers held its caller that long
+# (bluetti-community/bluetti-home-assistant#78). An answer takes about a second.
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
 
 class Bluetti:
     """Base class describing interactions with the BLUETTI cloud service."""
@@ -76,6 +82,9 @@ class Bluetti:
         callers restore a precise type at the boundary with typing.cast,
         matching what responseType actually validated.
 
+        Raises TimeoutError when the answer has not arrived in full within
+        REQUEST_TIMEOUT.
+
         - responseType: the type of response data, without the UnifyResponse wrapper.
         - method: the HTTP method.
         """
@@ -102,6 +111,7 @@ class Bluetti:
             headers=headers,
             json=body,
             params=params,
+            timeout=REQUEST_TIMEOUT,
         ) as response:
             self.logger.debug("<====== Server response status %s from %s", response.status, response.url)
             self.logger.debug("<====== Server response type is: %s", response.content_type)

@@ -1,9 +1,15 @@
 """Tests for the Bluetti base API client (client.py) via ProductClient."""
 
+import asyncio
 from unittest.mock import MagicMock
 
+import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
+from pybluetti import client as client_module
+from pybluetti.client import REQUEST_TIMEOUT
 from pybluetti.exceptions import ApplicationRuntimeException, HttpStatusException
 from pybluetti.product_client import ProductClient
 
@@ -169,3 +175,48 @@ async def test_bind_devices_posts_payload():
     _method, url, kwargs = session.calls[0]
     assert url.endswith("/api/bluiotdata/ha/v1/bindDevices")
     assert kwargs["json"] == {"bindSnList": ["SN1"]}
+
+
+async def test_every_request_carries_the_timeout():
+    response = _FakeResponse(json_data={"msgId": "1", "msgCode": 0, "data": None})
+    session = _FakeSession(response)
+    client, _on_auth_expired = _client(session)
+
+    await client.get_user_products()
+    await client.get_device_status("SN1")
+    await client.control_device({"sn": "SN1", "fnCode": "AC", "fnValue": "1"})
+    await client.bind_devices({"bindSnList": ["SN1"]})
+
+    assert [kwargs["timeout"] for _method, _url, kwargs in session.calls] == [REQUEST_TIMEOUT] * 4
+    assert REQUEST_TIMEOUT.total == 10
+
+
+async def test_request_the_cloud_never_answers_times_out(monkeypatch):
+    # The gateway accepted a status request and sent nothing back, and the
+    # request waited out the session's five minutes
+    # (bluetti-community/bluetti-home-assistant#78). A real session against a
+    # server that does the same, with the limit cut down to keep the test short.
+    monkeypatch.setattr(client_module, "REQUEST_TIMEOUT", aiohttp.ClientTimeout(total=0.2))
+    release = asyncio.Event()
+
+    async def never_answers(_request):
+        await release.wait()
+        return web.Response()
+
+    app = web.Application()
+    app.router.add_get("/api/bluiotdata/ha/v1/deviceStates", never_answers)
+
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        client = ProductClient(session, str(server.make_url("")).rstrip("/"), "test-token")
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            # The outer limit only stops a client without a timeout from
+            # holding the test for five minutes; the elapsed time tells the two apart.
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(client.get_device_status("SN1"), 5)
+            elapsed = loop.time() - started
+        finally:
+            release.set()
+
+    assert elapsed < 2
