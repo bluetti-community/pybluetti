@@ -6,9 +6,10 @@ https://github.com/bluetti-official/bluetti-home-assistant's
 custom_components/bluetti/api/, the same way
 https://github.com/pyenphase/pyenphase backs the enphase_envoy Home Assistant
 integration. Fully async, including the websocket push-update transport
-(`aiohttp`'s native websocket client, no dedicated threads). Wiring
-bluetti-home-assistant to depend on this package is a separate follow-up.
+(`aiohttp`'s native websocket client, no dedicated threads).
 """
+
+from importlib.metadata import version
 
 from .client import Bluetti
 from .const import Method
@@ -18,7 +19,7 @@ from .product_client import ProductClient
 from .unify_response import UnifyResponse
 from .websocket import StompClient
 
-__version__ = "0.1.1"
+__version__ = version("pybluetti")
 
 __all__ = [
     "ApplicationRuntimeException",
