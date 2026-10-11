@@ -1,3 +1,7 @@
+# 0.2.8
+
+- `pybluetti.__version__` is read from the installed package's metadata, so it matches the released version. It had said `0.1.1` since that release.
+
 # 0.2.7
 
 - Every request now has a timeout of 10 seconds (`REQUEST_TIMEOUT` in `client.py`), set in `Bluetti._request()` and so on all four calls of `ProductClient`. There was none, so the session's own applied, and aiohttp's default for that is five minutes: when the gateway accepted a status request and never answered it, each `get_device_status()` held its caller for 300 s. In `bluetti-home-assistant`, which retries a timeout once and keeps the last values through two failed polls, that made one poll take ten minutes and left the entities on values up to half an hour old before they went unavailable (bluetti-community/bluetti-home-assistant#78). A request that runs out of time raises `TimeoutError`, as it did before after the five minutes, so a caller that already handles it needs no change. A caller that set a longer limit on its own session no longer gets it for these requests.
