@@ -16,8 +16,11 @@ from .unify_response import UnifyResponse
 # Set on every request, since without it the session's own limit applies, and
 # aiohttp's default for that is five minutes: a request the gateway accepts
 # and never answers held its caller that long
-# (bluetti-community/bluetti-home-assistant#78). An answer takes about a second.
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
+# (bluetti-community/bluetti-home-assistant#78). An answer usually takes about
+# a second, but some accounts wait longer: a command answered in 8.5 s, and
+# one account's setup kept timing out at 10 s
+# (bluetti-community/bluetti-home-assistant#81).
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class Bluetti:
