@@ -124,6 +124,11 @@ class Bluetti:
             if response.content_type.lower().startswith("application/json"):
                 data = await response.json()  # read response body to JSON
                 unify_response = TypeAdapter(UnifyResponse[responseType]).validate_python(data)
+                # A command the cloud refuses still answers HTTP 200; its
+                # msgCode is the only trace of the refusal.
+                self.logger.debug(
+                    "<====== Server msgCode %s: %s", data.get("msgCode"), data.get("message")
+                )
                 if data.get("msgCode") == 805 and self._on_auth_expired is not None:
                     self._on_auth_expired()
                     self.logger.info("token have expired")
