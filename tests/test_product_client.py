@@ -220,3 +220,16 @@ async def test_request_the_cloud_never_answers_times_out(monkeypatch):
             release.set()
 
     assert elapsed < 2
+
+
+async def test_every_json_answer_logs_its_msgcode(caplog):
+    # A refused command still answers HTTP 200: without its msgCode the
+    # debug log cannot tell a refusal from an accepted command.
+    response = _FakeResponse(json_data={"msgId": "1", "msgCode": 1302, "message": "device offline", "data": None})
+    client, _on_auth_expired = _client(_FakeSession(response))
+
+    with caplog.at_level("DEBUG", logger="pybluetti"):
+        await client.control_device({"sn": "SN1", "fnCode": "SetCtrlWorkMode", "fnValue": "workmode_0"})
+
+    assert "<====== Server msgCode 1302: device offline" in caplog.text
+

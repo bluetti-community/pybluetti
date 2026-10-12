@@ -1,3 +1,7 @@
+# 0.2.9
+
+- Debug logging now includes the `msgCode` and `message` of every JSON answer. A command the cloud refuses still answers HTTP 200, so the code was the one part of the answer the log did not show.
+
 # 0.2.8
 
 - `pybluetti.__version__` is read from the installed package's metadata, so it matches the released version. It had said `0.1.1` since that release.
