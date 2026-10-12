@@ -1,3 +1,7 @@
+# 0.2.10
+
+- The request timeout is 30 seconds instead of 10. Some accounts wait longer than 10 seconds for an answer at times (a command answered in 8.5 s, and one account's Home Assistant setup kept timing out at 10 s: bluetti-community/bluetti-home-assistant#81). A request that never gets an answer still ends, after 30 seconds instead of five minutes.
+
 # 0.2.9
 
 - Debug logging now includes the `msgCode` and `message` of every JSON answer. A command the cloud refuses still answers HTTP 200, so the code was the one part of the answer the log did not show.

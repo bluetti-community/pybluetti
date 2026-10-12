@@ -188,7 +188,7 @@ async def test_every_request_carries_the_timeout():
     await client.bind_devices({"bindSnList": ["SN1"]})
 
     assert [kwargs["timeout"] for _method, _url, kwargs in session.calls] == [REQUEST_TIMEOUT] * 4
-    assert REQUEST_TIMEOUT.total == 10
+    assert REQUEST_TIMEOUT.total == 30
 
 
 async def test_request_the_cloud_never_answers_times_out(monkeypatch):
