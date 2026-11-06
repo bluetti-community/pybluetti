@@ -1,12 +1,14 @@
 """Tests for websocket.py (StompClient), the async aiohttp websocket transport."""
 
+import asyncio
 import json
+import logging
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
-from pybluetti.exceptions import ApplicationRuntimeException
+from pybluetti.exceptions import ApplicationRuntimeException, WebsocketNotConfirmedError
 from pybluetti.websocket import StompClient
 
 GATEWAY_WS_URL = "wss://gw.bluettipower.com/api/edgeiotgw/ws-coordination"
@@ -208,16 +210,23 @@ async def test_connect_closes_a_socket_whose_connect_frame_failed():
     assert client._ws is None
 
 
-async def test_connect_resets_the_backoff_so_it_is_per_outage():
+async def test_opening_a_socket_does_not_reset_the_backoff():
+    # The cloud opens a socket for a token it will never confirm: resetting
+    # here would never let the backoff grow.
     ws = _FakeWebSocket()
     client, _session, _on_auth_expired = _client(ws)
     client.reconnect_delay = 30
-
     await client.connect()
-
-    assert client.reconnect_delay == 1
-
+    assert client.reconnect_delay == 30
     await client.disconnect()  # tidy up the background tasks started above
+
+
+async def test_a_confirmed_connection_resets_the_backoff_so_it_is_per_outage():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.reconnect_delay = 30
+    await client._handle_frame("CONNECTED\nheart-beat:10000,10000\nuser-name:bob\n\n\x00")
+    assert client.reconnect_delay == 1
 
 
 async def test_schedule_reconnect_does_nothing_when_stopped_or_already_running():
@@ -714,3 +723,158 @@ def test_invoke_handler_does_nothing_without_handler():
     client, _session, _on_auth_expired = _client()
 
     client._invoke_handler("payload")  # must not raise
+
+
+# --- Connection confirmation (CONNECTED frame watchdog) ----------------------
+# Checked live on 2026-11-06, gw and gwde alike: with a made-up, expired or
+# signature-altered access token the cloud takes the websocket and the STOMP
+# CONNECT, then answers nothing - no CONNECTED, no ERROR - for as long as the
+# socket is left open. A good token is answered with CONNECTED in about 50 ms.
+
+
+async def test_connected_frame_confirms_the_connection():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    assert not client._connected.is_set()
+    await client._handle_frame("CONNECTED\nheart-beat:10000,10000\nuser-name:bob\n\n\x00")
+    assert client._connected.is_set()
+
+
+async def test_connect_starts_no_watchdog_unless_asked():
+    # Opt-in: a caller written before connected_timeout existed gets no new
+    # on_error call and no forced reconnect from a newer release.
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    assert client.connected_timeout is None
+    await client.connect()
+    assert client._watchdog_task is None
+    await client.disconnect()
+
+
+async def test_connect_starts_the_watchdog_when_asked():
+    ws = _FakeWebSocket()
+    client = StompClient(_FakeSession(ws), GATEWAY_WS_URL, "token", connected_timeout=15)
+    client._ws = ws
+    await client.connect()
+    assert client._watchdog_task is not None
+    await client.disconnect()
+
+
+async def test_connect_cancels_and_forgets_the_watchdog_of_a_previous_connection():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    stale_watchdog = MagicMock()
+    client._watchdog_task = stale_watchdog
+    await client.connect()
+    stale_watchdog.cancel.assert_called_once()
+    # No timeout, so nothing replaced it: disconnect() must not await it.
+    assert client._watchdog_task is None
+    await client.disconnect()
+
+
+async def test_expect_connected_without_a_timeout_watches_nothing():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.running = True
+    client.on_error = MagicMock()
+    await client._expect_connected(ws, asyncio.Event())
+    client.on_error.assert_not_called()
+    assert ws.close_called is False
+
+
+async def test_expect_connected_returns_quietly_once_the_cloud_confirms():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.running = True
+    client.connected_timeout = 0.01
+    client.on_error = MagicMock()
+    confirmed = asyncio.Event()
+    confirmed.set()
+    await client._expect_connected(ws, confirmed)
+    client.on_error.assert_not_called()
+    assert ws.closed is False
+
+
+async def test_expect_connected_gives_up_on_a_connection_never_confirmed(caplog):
+    ws = _FakeWebSocket()
+    client, _session, on_auth_expired = _client(ws)
+    client.running = True
+    client.connected_timeout = 0.01
+    client.on_error = MagicMock()
+    with caplog.at_level(logging.WARNING, logger="pybluetti.websocket"):
+        await client._expect_connected(ws, asyncio.Event())
+    assert ws.close_called is True
+    client.on_error.assert_called_once()
+    (err,) = client.on_error.call_args.args
+    assert isinstance(err, WebsocketNotConfirmedError)
+    assert isinstance(err, ApplicationRuntimeException)
+    assert err.msgCode == -1
+    assert "not confirmed within 0.01 s" in caplog.text
+    # The silence does not say the token expired, so this is not that path.
+    on_auth_expired.assert_not_called()
+
+
+async def test_expect_connected_logs_a_repeated_silence_once(caplog):
+    client, _session, _on_auth_expired = _client(None)
+    client.running = True
+    client.connected_timeout = 0.01
+    client.on_error = MagicMock()
+    with caplog.at_level(logging.DEBUG, logger="pybluetti.websocket"):
+        for _ in range(2):
+            ws = _FakeWebSocket()
+            client._ws = ws
+            await client._expect_connected(ws, asyncio.Event())
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "(repeat)" in caplog.text
+    assert client.on_error.call_count == 2
+
+
+async def test_expect_connected_without_on_error_still_closes_the_socket():
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.running = True
+    client.connected_timeout = 0.01
+    await client._expect_connected(ws, asyncio.Event())
+    assert ws.close_called is True
+
+
+@pytest.mark.parametrize("situation", ["superseded", "already_closed", "stopped"])
+async def test_expect_connected_leaves_a_connection_it_no_longer_owns(situation):
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.running = True
+    client.connected_timeout = 0.01
+    client.on_error = MagicMock()
+    if situation == "superseded":
+        client._ws = _FakeWebSocket()
+    elif situation == "already_closed":
+        ws.closed = True
+    else:
+        client.running = False
+    await client._expect_connected(ws, asyncio.Event())
+    assert ws.close_called is False
+    client.on_error.assert_not_called()
+
+
+async def test_a_connected_frame_after_the_watchdog_gave_up_is_ignored():
+    # The watchdog closed this socket and the reconnect is on its way: a
+    # CONNECTED arriving now confirms nothing, resets no backoff and
+    # subscribes nothing.
+    ws = _FakeWebSocket()
+    client, _session, _on_auth_expired = _client(ws)
+    client.running = True
+    client.connected_timeout = 0.01
+    client.reconnect_delay = 8
+    await client._expect_connected(ws, asyncio.Event())
+    assert ws.closed is True
+    await client._handle_frame("CONNECTED\nheart-beat:10000,10000\nuser-name:bob\n\n\x00")
+    assert not client._connected.is_set()
+    assert client.reconnect_delay == 8
+    assert ws.sent == []
+
+
+def test_websocket_not_confirmed_error_names_the_timeout():
+    err = WebsocketNotConfirmedError(15)
+    assert err.msgCode == -1
+    assert str(err) == "[-1] Websocket connection not confirmed within 15 s (no CONNECTED frame)"

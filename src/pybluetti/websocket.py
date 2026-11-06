@@ -15,7 +15,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", SyntaxWarning)
     import stomper
 
-from .exceptions import ApplicationRuntimeException
+from .exceptions import ApplicationRuntimeException, WebsocketNotConfirmedError
 
 __LOGGER__ = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class StompClient:
         on_error: Callable[[ApplicationRuntimeException], None] | None = None,
         app_key: str | None = None,
         app_ver: str | None = None,
+        connected_timeout: float | None = None,
     ) -> None:
         """
         Initialize the client.
@@ -78,6 +79,13 @@ class StompClient:
           connection attempt with exactly today's headers, not a forced
           value it doesn't have. Raises ValueError if only one is given -
           the cloud is only known to accept both together or neither.
+        - connected_timeout: seconds to wait for the cloud's CONNECTED frame
+          before giving up on a connection (on_error with a
+          WebsocketNotConfirmedError, then the usual reconnect). None, the
+          default, waits for ever, as before: a caller opts in, so an older
+          caller on a newer release sees no new on_error call and no forced
+          reconnect. The cloud answers nothing at all to a token it does not
+          accept; a good token is confirmed in about 50 ms.
         """
         if (app_key is None) != (app_ver is None):
             msg = "app_key and app_ver must be given together"
@@ -100,6 +108,12 @@ class StompClient:
         self._receive_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
+        # Set by the CONNECTED frame of the current connection. With
+        # connected_timeout set, a connection still unconfirmed after that
+        # many seconds is given up on (see WebsocketNotConfirmedError).
+        self._connected = asyncio.Event()
+        self.connected_timeout = connected_timeout
         self.heartbeat_interval = 10
         # The most recent ApplicationRuntimeException message _run() logged
         # at full severity, cleared once a CONNECTED frame proves the
@@ -185,6 +199,11 @@ class StompClient:
         # whatever actually triggered this reconnect.
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
+        if self._watchdog_task is not None:
+            self._watchdog_task.cancel()
+            # Forgotten, not just cancelled: without a timeout no new one
+            # replaces it, and disconnect() would await a stale task.
+            self._watchdog_task = None
         await self._close_socket()
 
         try:
@@ -215,12 +234,45 @@ class StompClient:
 
         __LOGGER__.info("Connect the BLUETTI WebSocket Server successfully.")
 
-        # The backoff is per outage, not cumulative: without this, every later
-        # reconnect starts at whatever delay the last outage grew it to.
-        self.reconnect_delay = 1
+        self._connected = asyncio.Event()
         self._receive_task = asyncio.ensure_future(self._run())
         self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
+        if self.connected_timeout is not None:
+            self._watchdog_task = asyncio.ensure_future(
+                self._expect_connected(self._ws, self._connected)
+            )
         return True
+
+    async def _expect_connected(
+        self, ws: aiohttp.ClientWebSocketResponse, connected: asyncio.Event
+    ) -> None:
+        """
+        Give up on a connection the cloud never confirms.
+
+        Reported through on_error, not on_auth_expired: the silence has only
+        been seen for tokens the cloud would not accept, but it does not say
+        so. Closing the socket ends _run(), whose reconnect retries with
+        backoff - logged once per outage, like a repeated ERROR frame.
+        """
+        timeout = self.connected_timeout
+        if timeout is None:
+            # Only started with a timeout set; nothing to watch without one.
+            return
+        try:
+            async with asyncio.timeout(timeout):
+                await connected.wait()
+        except TimeoutError:
+            if ws is not self._ws or ws.closed or not self.running:
+                return
+            err = WebsocketNotConfirmedError(timeout)
+            if str(err) == self._last_error_message:
+                __LOGGER__.debug("%s (repeat)", err)
+            else:
+                __LOGGER__.warning("%s", err)
+                self._last_error_message = str(err)
+            if self.on_error is not None:
+                self.on_error(err)
+            await ws.close()
 
     async def _close_socket(self) -> None:
         """Close and forget the current socket, if there is one left open."""
@@ -245,7 +297,12 @@ class StompClient:
         self.running = False
         tasks = [
             t
-            for t in (self._receive_task, self._heartbeat_task, self._reconnect_task)
+            for t in (
+                self._receive_task,
+                self._heartbeat_task,
+                self._reconnect_task,
+                self._watchdog_task,
+            )
             if t is not None
         ]
         for task in tasks:
@@ -399,6 +456,22 @@ class StompClient:
         if ws is None:
             __LOGGER__.error("Received a CONNECTED frame without an open connection, cannot subscribe")
             return
+
+        if ws.closed:
+            # Late: the watchdog already gave up on this socket and closed
+            # it, and the reconnect is on its way. Confirming it now would
+            # reset the backoff for a connection nobody is using, and the
+            # subscription could not be sent on it anyway.
+            __LOGGER__.debug("CONNECTED frame for a connection already given up on, ignored")
+            return
+
+        self._connected.set()
+        # The backoff is per outage, not cumulative: without this, every later
+        # reconnect starts at whatever delay the last outage grew it to. Reset
+        # here, on the cloud's confirmation, not when the socket opens: a
+        # socket the cloud never confirms opens every time, and resetting
+        # there would retry it every connected_timeout + 1 s, forever.
+        self.reconnect_delay = 1
 
         # A real connection again - if the same ERROR frame recurs later,
         # that's new information worth a full traceback again, not a
