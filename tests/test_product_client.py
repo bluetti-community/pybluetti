@@ -73,6 +73,39 @@ async def test_get_user_products_success():
     assert kwargs["json"] is None
 
 
+async def test_get_user_products_stays_on_the_v1_route():
+    session = _FakeSession(_FakeResponse(json_data={"msgId": "1", "msgCode": 0, "data": []}))
+    client, _on_auth_expired = _client(session)
+
+    await client.get_user_products()
+
+    method, url, _kwargs = session.calls[0]
+    assert (method, url) == ("GET", f"{GATEWAY_URL}/api/bluiotdata/ha/v1/devices")
+
+
+async def test_get_user_products_v2_reads_support_network():
+    device = {"sn": "SN1", "stateList": [], "online": "1", "supportNetwork": "0"}
+    session = _FakeSession(_FakeResponse(json_data={"msgId": "1", "msgCode": 0, "data": [device]}))
+    client, _on_auth_expired = _client(session)
+
+    result = await client.get_user_products_v2()
+
+    assert result.data[0].supportNetwork == "0"
+    method, url, kwargs = session.calls[0]
+    assert (method, url) == ("GET", f"{GATEWAY_URL}/api/bluiotdata/ha/v2/devices")
+    assert kwargs["json"] is None
+
+
+async def test_support_network_is_optional():
+    device = {"sn": "SN1", "stateList": [], "online": "1"}
+    session = _FakeSession(_FakeResponse(json_data={"msgId": "1", "msgCode": 0, "data": [device]}))
+    client, _on_auth_expired = _client(session)
+
+    result = await client.get_user_products_v2()
+
+    assert result.data[0].supportNetwork is None
+
+
 async def test_update_access_token_affects_subsequent_requests():
     response = _FakeResponse(json_data={"msgId": "1", "msgCode": 0, "data": []})
     session = _FakeSession(response)

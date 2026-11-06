@@ -14,3 +14,4 @@ class UserProduct(BaseModel):
     model: str | None = None
     name: str | None = None
     isBindByCurUser: str | None = None
+    supportNetwork: str | None = None
