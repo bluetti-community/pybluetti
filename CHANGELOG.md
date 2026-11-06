@@ -2,6 +2,7 @@
 
 - `StompClient(..., connected_timeout=...)` can give up on a websocket connection the cloud never confirms. With an access token it does not accept - made up, expired or with its signature altered, checked on `gw` and `gwde` - the cloud opens the socket and takes the STOMP CONNECT, then answers nothing: no CONNECTED frame, no ERROR frame, while the client goes on sending heartbeats as if connected. With `connected_timeout` set, a connection still unconfirmed after that many seconds logs a warning once per outage, calls `on_error` with a `WebsocketNotConfirmedError` (msgCode `-1`, there being no cloud code for the silence) and reconnects with the usual backoff; a CONNECTED frame arriving after that is ignored. It defaults to `None`, which waits for ever as before, so a caller sees no new `on_error` call and no forced reconnect until it asks for them.
 - The reconnect backoff is reset by the cloud's CONNECTED frame instead of by the socket opening, so a connection that is never confirmed backs off like any other failure.
+- `UnifyResponse.message` holds the cloud's own text for its `msgCode`, which pydantic used to drop. 805 and 803 each come with their own sentence, which is what tells two rejections apart in a log. It is `None` when an answer does not carry it.
 
 # 0.3.0
 
