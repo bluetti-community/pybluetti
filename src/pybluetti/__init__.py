@@ -13,7 +13,11 @@ from importlib.metadata import version
 
 from .client import Bluetti
 from .const import Method
-from .exceptions import ApplicationRuntimeException, HttpStatusException
+from .exceptions import (
+    ApplicationRuntimeException,
+    HttpStatusException,
+    WebsocketNotConfirmedError,
+)
 from .models import UserProduct
 from .product_client import ProductClient
 from .unify_response import UnifyResponse
@@ -30,4 +34,5 @@ __all__ = [
     "StompClient",
     "UnifyResponse",
     "UserProduct",
+    "WebsocketNotConfirmedError",
 ]
