@@ -63,3 +63,22 @@ class HttpStatusException(ApplicationRuntimeException):
     def is_transient(self) -> bool:
         """Whether one immediate retry is worth a try (a proxy/gateway hiccup)."""
         return self.status in (502, 503, 504)
+
+
+class WebsocketNotConfirmedError(ApplicationRuntimeException):
+    """
+    Raised when the cloud takes a websocket connection but never confirms it.
+
+    A STOMP CONNECT the cloud accepts is answered with a CONNECTED frame, in
+    about 50 ms. With an access token it does not accept - made up, expired,
+    or with its signature altered, on gw and gwde alike (checked 2026-11-06) -
+    it answers nothing at all: no CONNECTED, no ERROR frame, the socket stays
+    open and takes the client's heartbeats for as long as it is left running.
+    There is no cloud msgCode for that silence, hence -1.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        super().__init__(
+            msgCode=-1,
+            errMessage=f"Websocket connection not confirmed within {timeout:g} s (no CONNECTED frame)",
+        )
