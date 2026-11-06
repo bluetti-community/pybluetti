@@ -28,6 +28,21 @@ class ProductClient(Bluetti):
         )
         return cast("UnifyResponse[list[UserProduct]]", result)
 
+    async def get_user_products_v2(self) -> UnifyResponse[list[UserProduct]]:
+        """
+        Get the devices bound to the account from the v2 route.
+
+        This is the route BLUETTI's own integration lists devices from. Each
+        device can carry ``supportNetwork``: anything but ``"1"`` means no
+        cloud control.
+        """
+        result = await self._request(
+            list[UserProduct],
+            Method.GET,
+            "/api/bluiotdata/ha/v2/devices",
+        )
+        return cast("UnifyResponse[list[UserProduct]]", result)
+
     async def get_device_status(self, sns: str | None = None) -> UnifyResponse[list[UserProduct]]:
         """Poll device state."""
         result = await self._request(

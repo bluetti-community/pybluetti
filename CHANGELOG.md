@@ -1,3 +1,8 @@
+# 0.3.0
+
+- `ProductClient.get_user_products_v2()` lists devices from `/ha/v2/devices`, the route BLUETTI's own integration uses. `get_user_products()` stays on `/ha/v1/devices`, so an existing caller sees no change.
+- `UserProduct.supportNetwork` holds the field of the same name. BLUETTI's integration treats anything but `"1"` as no cloud control. It is `None` when the answer does not carry it.
+
 # 0.2.10
 
 - The request timeout is 30 seconds instead of 10. Some accounts wait longer than 10 seconds for an answer at times (a command answered in 8.5 s, and one account's Home Assistant setup kept timing out at 10 s: bluetti-community/bluetti-home-assistant#81). A request that never gets an answer still ends, after 30 seconds instead of five minutes.
