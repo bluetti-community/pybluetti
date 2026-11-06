@@ -1,3 +1,7 @@
+# Unreleased
+
+- `UnifyResponse.message` holds the cloud's own text for its `msgCode`, which pydantic used to drop. 805 and 803 each come with their own sentence, which is what tells two rejections apart in a log. It is `None` when an answer does not carry it.
+
 # 0.3.0
 
 - `ProductClient.get_user_products_v2()` lists devices from `/ha/v2/devices`, the route BLUETTI's own integration uses. `get_user_products()` stays on `/ha/v1/devices`, so an existing caller sees no change.
